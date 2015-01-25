@@ -47,3 +47,10 @@ config MMI_PANEL_NOTIFICATIONS
 	default n
 	---help---
 	MMI panel notifications framework
+
+config FB_MSM_MDSS_MDP3_KCAL_CTRL
+	depends on FB_MSM_MDSS_MDP3
+	bool "MDP3 color control"
+	---help---
+	  Enable sysfs for rgb/lut control for mdp3 display controllers
+	  in MDSS.

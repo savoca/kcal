@@ -1529,7 +1529,7 @@ static int mdp3_histo_ioctl(struct msm_fb_data_type *mfd, u32 cmd,
 }
 
 static int mdp3_ctrl_lut_update(struct msm_fb_data_type *mfd,
-				struct fb_cmap *cmap)
+				struct fb_cmap *cmap, void *setup)
 {
 	int rc = 0;
 	struct mdp3_session_data *mdp3_session = mfd->mdp.private1;
@@ -1548,22 +1548,24 @@ static int mdp3_ctrl_lut_update(struct msm_fb_data_type *mfd,
 		return  -EINVAL;
 	}
 
-	rc = copy_from_user(r + cmap->start,
-					cmap->red, sizeof(u16)*cmap->len);
-	rc |= copy_from_user(g + cmap->start,
-					cmap->green, sizeof(u16)*cmap->len);
-	rc |= copy_from_user(b + cmap->start,
-					cmap->blue, sizeof(u16)*cmap->len);
-	if (rc)
-		return rc;
+	if (setup) {
+		rc = copy_from_user(r + cmap->start,
+						cmap->red, sizeof(u16)*cmap->len);
+		rc |= copy_from_user(g + cmap->start,
+						cmap->green, sizeof(u16)*cmap->len);
+		rc |= copy_from_user(b + cmap->start,
+						cmap->blue, sizeof(u16)*cmap->len);
+		if (rc)
+			return rc;
+	}
 
 	lut_config.lut_enable = 7;
 	lut_config.lut_sel = mdp3_session->lut_sel;
 	lut_config.lut_position = 0;
 	lut_config.lut_dirty = true;
-	lut.color0_lut = r;
-	lut.color1_lut = g;
-	lut.color2_lut = b;
+	lut.color0_lut = setup ? r : cmap->red;
+	lut.color1_lut = setup ? g : cmap->green;
+	lut.color2_lut = setup ? b : cmap->blue;
 
 	mutex_lock(&mdp3_session->lock);
 
@@ -1585,6 +1587,155 @@ static int mdp3_ctrl_lut_update(struct msm_fb_data_type *mfd,
 	mutex_unlock(&mdp3_session->lock);
 	return rc;
 }
+
+#ifdef CONFIG_FB_MSM_MDSS_MDP3_KCAL_CTRL
+static int update_preset_lcdc_lut(struct msm_fb_data_type *mfd,
+	void *setup, int kr, int kg, int kb)
+{
+	int ret = 0;
+	struct fb_cmap cmap;
+
+	cmap.start = 0;
+	cmap.len = 256;
+	cmap.transp = NULL;
+
+	cmap.red = (uint16_t *)&(kr);
+	cmap.green = (uint16_t *)&(kg);
+	cmap.blue = (uint16_t *)&(kb);
+
+	ret = mdp3_ctrl_lut_update(mfd, &cmap, (void *)setup);
+	if (ret)
+		pr_err("%s: failed to set lut: %d\n", __func__, ret);
+
+	return ret;
+}
+
+static void mdp3_ctrl_kcal_apply(struct msm_fb_data_type *mfd,
+	struct mdp3_session_data *mdp3_session)
+{
+	mdp3_session->lut_data.red = (mdp3_session->lut_data.red <
+		mdp3_session->lut_data.minimum) ? mdp3_session->lut_data.minimum :
+			mdp3_session->lut_data.red;
+	mdp3_session->lut_data.green = (mdp3_session->lut_data.green <
+		mdp3_session->lut_data.minimum) ? mdp3_session->lut_data.minimum :
+			mdp3_session->lut_data.green;
+	mdp3_session->lut_data.blue = (mdp3_session->lut_data.blue <
+		mdp3_session->lut_data.minimum) ? mdp3_session->lut_data.minimum :
+			mdp3_session->lut_data.blue;
+
+	update_preset_lcdc_lut(mfd, NULL, mdp3_session->lut_data.red,
+		mdp3_session->lut_data.green, mdp3_session->lut_data.blue);
+}
+
+static ssize_t mdp3_ctrl_kcal_store(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t count)
+{
+	int kcal_r, kcal_g, kcal_b;
+	struct fb_info *fbi = dev_get_drvdata(dev);
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)fbi->par;
+	struct mdp3_session_data *mdp3_session = NULL;
+
+	if (!mfd || !mfd->mdp.private1)
+        return -EAGAIN;
+
+	mdp3_session = (struct mdp3_session_data *)mfd->mdp.private1;
+
+	if (count < 6 || count > 12)
+		return -EINVAL;
+
+	sscanf(buf, "%d %d %d", &kcal_r, &kcal_g, &kcal_b);
+
+	if (kcal_r < 0 || kcal_r > 255)
+		return -EINVAL;
+
+	if (kcal_g < 0 || kcal_g > 255)
+		return -EINVAL;
+
+	if (kcal_b < 0 || kcal_b > 255)
+		return -EINVAL;
+
+	mdp3_session->lut_data.red = kcal_r;
+	mdp3_session->lut_data.green = kcal_g;
+	mdp3_session->lut_data.blue = kcal_b;
+
+	mdp3_ctrl_kcal_apply(mfd, mdp3_session);
+
+	return count;
+}
+
+static ssize_t mdp3_ctrl_kcal_show(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	struct fb_info *fbi = dev_get_drvdata(dev);
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)fbi->par;
+	struct mdp3_session_data *mdp3_session = NULL;
+
+	if (!mfd || !mfd->mdp.private1)
+        return -EAGAIN;
+
+	mdp3_session = (struct mdp3_session_data *)mfd->mdp.private1;
+
+	return sprintf(buf, "%d %d %d\n", mdp3_session->lut_data.red,
+		mdp3_session->lut_data.green, mdp3_session->lut_data.blue);
+}
+
+static ssize_t mdp3_ctrl_kcal_min_store(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t count)
+{
+	int kcal_min;
+	struct fb_info *fbi = dev_get_drvdata(dev);
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)fbi->par;
+	struct mdp3_session_data *mdp3_session = NULL;
+
+	if (!mfd || !mfd->mdp.private1)
+        return -EAGAIN;
+
+	mdp3_session = (struct mdp3_session_data *)mfd->mdp.private1;
+
+	if (count < 2 || count > 4)
+		return -EINVAL;
+
+	sscanf(buf, "%d", &kcal_min);
+
+	if (kcal_min < 0 || kcal_min > 255)
+		return -EINVAL;
+
+	mdp3_session->lut_data.minimum = kcal_min;
+
+	mdp3_ctrl_kcal_apply(mfd, mdp3_session);
+
+	return count;
+}
+
+static ssize_t mdp3_ctrl_kcal_min_show(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	struct fb_info *fbi = dev_get_drvdata(dev);
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)fbi->par;
+	struct mdp3_session_data *mdp3_session = NULL;
+
+	if (!mfd || !mfd->mdp.private1)
+        return -EAGAIN;
+
+	mdp3_session = (struct mdp3_session_data *)mfd->mdp.private1;
+
+	return sprintf(buf, "%d\n", mdp3_session->lut_data.minimum);
+}
+
+static DEVICE_ATTR(kcal, 0644, mdp3_ctrl_kcal_show, mdp3_ctrl_kcal_store);
+static DEVICE_ATTR(kcal_min, 0644, mdp3_ctrl_kcal_min_show,
+	mdp3_ctrl_kcal_min_store);
+
+static struct attribute *kcal_fs_attrs[] = {
+	&dev_attr_kcal.attr,
+	&dev_attr_kcal_min.attr,
+	NULL,
+};
+
+static struct attribute_group kcal_fs_attr_group = {
+	.attrs = kcal_fs_attrs,
+};
+#endif
 
 static int mdp3_ctrl_ioctl_handler(struct msm_fb_data_type *mfd,
 					u32 cmd, void __user *argp)
@@ -1781,6 +1932,19 @@ int mdp3_ctrl_init(struct msm_fb_data_type *mfd)
 	mdp3_session->vsync_period = 1000 / mfd->panel_info->mipi.frame_rate;
 	mfd->mdp.private1 = mdp3_session;
 
+#ifdef CONFIG_FB_MSM_MDSS_MDP3_KCAL_CTRL
+	rc = sysfs_create_group(&dev->kobj, &kcal_fs_attr_group);
+	if (rc) {
+		pr_err("kcal sysfs group creation failed, ret=%d\n", rc);
+		goto init_done;
+	}
+
+	mdp3_session->lut_data.red = MAX_KCAL_V;
+	mdp3_session->lut_data.green = MAX_KCAL_V;
+	mdp3_session->lut_data.blue = MAX_KCAL_V;
+	mdp3_session->lut_data.minimum = 35;
+#endif
+
 	rc = sysfs_create_group(&dev->kobj, &vsync_fs_attr_group);
 	if (rc) {
 		pr_err("vsync sysfs group creation failed, ret=%d\n", rc);
@@ -1826,6 +1990,12 @@ int mdp3_ctrl_init(struct msm_fb_data_type *mfd)
 	}
 
 	mdp3_session->vsync_before_commit = true;
+
+#ifdef CONFIG_FB_MSM_MDSS_MDP3_KCAL_CTRL
+	update_preset_lcdc_lut(mfd, (void *)1, mdp3_session->lut_data.red,
+		mdp3_session->lut_data.green, mdp3_session->lut_data.blue);
+#endif
+
 init_done:
 	if (IS_ERR_VALUE(rc))
 		kfree(mdp3_session);

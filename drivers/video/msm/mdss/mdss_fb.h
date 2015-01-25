@@ -117,7 +117,8 @@ struct msm_mdp_interface {
 	void (*dma_fnc)(struct msm_fb_data_type *mfd);
 	int (*cursor_update)(struct msm_fb_data_type *mfd,
 				struct fb_cursor *cursor);
-	int (*lut_update)(struct msm_fb_data_type *mfd, struct fb_cmap *cmap);
+	int (*lut_update)(struct msm_fb_data_type *mfd, struct fb_cmap *cmap,
+				void *setup);
 	int (*do_histogram)(struct msm_fb_data_type *mfd,
 				struct mdp_histogram *hist);
 	int (*update_ad_input)(struct msm_fb_data_type *mfd);
